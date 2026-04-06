@@ -61,17 +61,21 @@ wrangler secret put SESSION_SECRET
 wrangler secret put INGEST_TOKEN
 ```
 
-4. 执行数据库迁移：
-
-```bash
-wrangler d1 migrations apply account_manager_db --remote
-```
-
-5. 构建并部署：
+4. 构建并部署（会自动先跑远程迁移）：
 
 ```bash
 npm run deploy
 ```
+
+其中：
+
+- `npm run migrate:remote`：仅执行 D1 远程迁移
+- `npm run deploy:cf`：执行迁移 + `wrangler deploy`（不重复构建）
+
+如果你使用 Cloudflare 网页里的构建配置，推荐：
+
+- 构建命令：`npm run build`
+- 部署命令：`npm run deploy:cf`
 
 ## 外部上传接口
 
