@@ -51,6 +51,16 @@ export interface BatchActionResult {
   details: BatchActionDetail[];
 }
 
+export interface AccountMailItem {
+  id: string;
+  subject: string;
+  from: string;
+  receivedAt: string;
+  preview: string;
+  contentType: string;
+  content: string;
+}
+
 export interface AuthUser {
   username: string;
 }

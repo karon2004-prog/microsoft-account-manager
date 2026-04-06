@@ -1,4 +1,5 @@
 import type {
+  AccountMailItem,
   AccountItem,
   AccountPayload,
   AuthUser,
@@ -129,5 +130,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload ?? {})
     });
+  },
+
+  getAccountMessages(
+    id: number,
+    top = 3
+  ): Promise<{ accountId: number; account: string; messages: AccountMailItem[] }> {
+    const params = new URLSearchParams({ top: String(top) });
+    return request<{ accountId: number; account: string; messages: AccountMailItem[] }>(
+      `/api/accounts/${id}/messages?${params.toString()}`
+    );
   }
 };

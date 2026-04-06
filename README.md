@@ -8,6 +8,8 @@
 - 后台登录鉴权（HttpOnly Cookie 会话）
 - 内置 JS 批量刷新令牌与批量取件（Graph API）
 - 账号列表状态列展示刷新/取件结果
+- 点击账号即可弹出邮件模态框（左侧邮件列表，右侧邮件内容）
+- 账号列表支持调整每页展示数量
 - 支持外部系统上传账号到本服务：`POST /api/upload/ingest`
 - 支持两种上传数据格式：
   - `captchaurn` 行格式（如 `账号----密码----client_id----refresh_token`）
@@ -120,6 +122,7 @@ npm run deploy
 
 - `POST /api/accounts/refresh`：批量刷新 refresh_token
 - `POST /api/accounts/fetch`：批量取件（Graph API）
+- `GET /api/accounts/:id/messages?top=3`：按账号取件明细（用于前端邮件模态框）
 
 请求体示例：
 

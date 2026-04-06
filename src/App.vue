@@ -131,7 +131,7 @@
               </div>
               <div class="list-toolbar-right">
                 <n-input-number
-                  v-model:value="fetchTop"
+                  v-model:value="mailTop"
                   size="small"
                   :min="1"
                   :max="20"
@@ -144,18 +144,7 @@
                 <n-button size="small" :loading="syncLoading" @click="handleRefreshAccounts(true)">
                   刷新全部
                 </n-button>
-                <n-button size="small" :loading="syncLoading" @click="handleFetchAccounts(false)">
-                  取件选中
-                </n-button>
-                <n-button
-                  size="small"
-                  type="primary"
-                  secondary
-                  :loading="syncLoading"
-                  @click="handleFetchAccounts(true)"
-                >
-                  取件全部
-                </n-button>
+                <n-tag size="small" type="default">取件数 {{ normalizedMailTop }}</n-tag>
                 <n-button size="small" :loading="tableLoading" @click="loadAccounts">刷新列表</n-button>
               </div>
             </div>
@@ -167,7 +156,7 @@
               :row-key="rowKey"
               :loading="tableLoading"
               :checked-row-keys="checkedRowKeys"
-              :pagination="{ pageSize: 10 }"
+              :pagination="tablePagination"
               :scroll-x="1500"
               max-height="520"
               @update:checked-row-keys="handleCheckedRowKeysUpdate"
@@ -280,6 +269,44 @@
         </n-space>
       </template>
     </n-modal>
+
+    <n-modal
+      v-model:show="mailVisible"
+      preset="card"
+      :title="`邮箱取件 - ${mailAccount}`"
+      style="width: min(1100px, 96vw)"
+    >
+      <div class="mail-modal-wrapper">
+        <div class="mail-list-panel">
+          <n-spin :show="mailLoading">
+            <n-empty v-if="mailItems.length === 0" description="暂无邮件" />
+            <div v-else class="mail-list">
+              <button
+                v-for="item in mailItems"
+                :key="item.id"
+                class="mail-item"
+                :class="{ 'mail-item-active': selectedMail?.id === item.id }"
+                type="button"
+                @click="selectedMailId = item.id"
+              >
+                <p class="mail-item-subject">{{ item.subject || '(无主题)' }}</p>
+                <p class="mail-item-meta">{{ item.from || '-' }}</p>
+                <p class="mail-item-meta">{{ formatMailDate(item.receivedAt) }}</p>
+              </button>
+            </div>
+          </n-spin>
+        </div>
+        <div class="mail-content-panel">
+          <n-empty v-if="!selectedMail" description="请从左侧选择邮件" />
+          <div v-else class="mail-content-block">
+            <h3 class="mail-content-title">{{ selectedMail.subject || '(无主题)' }}</h3>
+            <p class="mail-content-meta">发件人：{{ selectedMail.from || '-' }}</p>
+            <p class="mail-content-meta">时间：{{ formatMailDate(selectedMail.receivedAt) }}</p>
+            <div class="mail-content-text">{{ selectedMailText }}</div>
+          </div>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -290,6 +317,7 @@ import {
   NCard,
   NCode,
   NDataTable,
+  NEmpty,
   NForm,
   NFormItem,
   NGi,
@@ -306,7 +334,13 @@ import {
   type DataTableColumns
 } from 'naive-ui';
 import { api, UnauthorizedError } from './api';
-import type { AccountItem, AccountPayload, BatchActionResult, IngestConfig } from './types';
+import type {
+  AccountItem,
+  AccountMailItem,
+  AccountPayload,
+  BatchActionResult,
+  IngestConfig
+} from './types';
 
 const { message } = createDiscreteApi(['message']);
 
@@ -327,7 +361,14 @@ const activeTab = ref<'accounts' | 'ingest'>('accounts');
 const accounts = ref<AccountItem[]>([]);
 const searchKeyword = ref('');
 const checkedRowKeys = ref<number[]>([]);
-const fetchTop = ref<number | null>(3);
+const mailTop = ref<number | null>(3);
+const tablePageSize = ref<number>(20);
+
+const mailVisible = ref(false);
+const mailLoading = ref(false);
+const mailAccount = ref('');
+const mailItems = ref<AccountMailItem[]>([]);
+const selectedMailId = ref('');
 
 const tableLoading = ref(false);
 const createLoading = ref(false);
@@ -406,7 +447,27 @@ const accountColumns: DataTableColumns<AccountItem> = [
     type: 'selection',
     width: 42
   },
-  { title: '账号', key: 'account', minWidth: 220, ellipsis: { tooltip: true } },
+  {
+    title: '账号',
+    key: 'account',
+    minWidth: 220,
+    ellipsis: { tooltip: true },
+    render: (row) =>
+      h(
+        NButton,
+        {
+          text: true,
+          type: 'primary',
+          onClick: (event: MouseEvent) => {
+            event.stopPropagation();
+            void handleOpenMailModal(row);
+          }
+        },
+        {
+          default: () => row.account
+        }
+      )
+  },
   { title: '密码', key: 'password', minWidth: 170, ellipsis: { tooltip: true } },
   {
     title: 'Client ID',
@@ -477,6 +538,33 @@ const accountColumns: DataTableColumns<AccountItem> = [
   }
 ];
 
+const normalizedMailTop = computed(() => Math.min(Math.max(Math.trunc(mailTop.value || 3), 1), 20));
+
+const tablePagination = computed(() => ({
+  pageSize: tablePageSize.value,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onUpdatePageSize: (size: number) => {
+    tablePageSize.value = size;
+  }
+}));
+
+const selectedMail = computed(() => {
+  return mailItems.value.find((item) => item.id === selectedMailId.value) ?? null;
+});
+
+const selectedMailText = computed(() => {
+  if (!selectedMail.value) {
+    return '';
+  }
+
+  const content = selectedMail.value.content || selectedMail.value.preview || '';
+  if (selectedMail.value.contentType === 'html') {
+    return htmlToText(content);
+  }
+  return content;
+});
+
 const ingestEndpointUrl = computed(() =>
   siteOrigin.value ? `${siteOrigin.value}${ingestEndpointPath.value}` : ingestEndpointPath.value
 );
@@ -520,6 +608,11 @@ function clearSessionState(): void {
   currentUser.value = '';
   accounts.value = [];
   checkedRowKeys.value = [];
+  mailVisible.value = false;
+  mailLoading.value = false;
+  mailAccount.value = '';
+  mailItems.value = [];
+  selectedMailId.value = '';
   editVisible.value = false;
 }
 
@@ -554,6 +647,32 @@ function showBatchResult(prefix: string, result: BatchActionResult): void {
   } else {
     message.warning(`${prefix}完成：成功 ${result.success}，失败 ${result.failure}`);
   }
+}
+
+function htmlToText(html: string): string {
+  if (!html) {
+    return '';
+  }
+
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return (doc.body.textContent || '').trim();
+  } catch {
+    return html;
+  }
+}
+
+function formatMailDate(value: string): string {
+  if (!value) {
+    return '-';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
 }
 
 function normalizePayload(payload: Required<AccountPayload>): AccountPayload {
@@ -789,26 +908,23 @@ async function handleRefreshAccounts(all: boolean): Promise<void> {
   }
 }
 
-async function handleFetchAccounts(all: boolean): Promise<void> {
-  const accountIds = getTargetAccountIds(all);
-  if (!all && accountIds.length === 0) {
-    message.warning('请先勾选需要取件的账号');
-    return;
-  }
+async function handleOpenMailModal(row: AccountItem): Promise<void> {
+  mailVisible.value = true;
+  mailLoading.value = true;
+  mailAccount.value = row.account;
+  mailItems.value = [];
+  selectedMailId.value = '';
 
-  syncLoading.value = true;
   try {
-    const result = await api.fetchAccounts({
-      accountIds: all ? undefined : accountIds,
-      top: Math.min(Math.max(Math.trunc(fetchTop.value || 3), 1), 20),
-      concurrency: 6
-    });
+    const response = await api.getAccountMessages(row.id, normalizedMailTop.value);
+    mailAccount.value = response.account;
+    mailItems.value = response.messages;
+    selectedMailId.value = response.messages[0]?.id ?? '';
     await loadAccounts();
-    showBatchResult('取件', result);
   } catch (error) {
     handleApiError(error);
   } finally {
-    syncLoading.value = false;
+    mailLoading.value = false;
   }
 }
 

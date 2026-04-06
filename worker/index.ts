@@ -79,6 +79,23 @@ interface BatchActionDetail {
   fetchedCount?: number;
 }
 
+interface AccountMailItem {
+  id: string;
+  subject: string;
+  from: string;
+  receivedAt: string;
+  preview: string;
+  contentType: string;
+  content: string;
+}
+
+interface FetchActionResult {
+  ok: boolean;
+  message: string;
+  fetchedCount: number;
+  messages: AccountMailItem[];
+}
+
 interface TokenExchangeResult {
   accessToken: string;
   refreshToken: string;
@@ -422,6 +439,27 @@ app.post('/api/accounts/fetch', async (c) => {
   });
 });
 
+app.get('/api/accounts/:id/messages', async (c) => {
+  const id = parseNumericId(c.req.param('id'));
+  const top = clampInteger(c.req.query('top'), 1, 20, DEFAULT_FETCH_TOP);
+  const account = await fetchAccountById(c.env.DB, id);
+
+  if (!account) {
+    throw new HTTPException(404, { message: '账号不存在' });
+  }
+
+  const result = await fetchAccountMessages(c.env.DB, account, top);
+  if (!result.ok) {
+    throw new HTTPException(400, { message: result.message });
+  }
+
+  return c.json({
+    accountId: account.id,
+    account: account.account,
+    messages: result.messages
+  });
+});
+
 app.get('/api/ingest-config', async (c) => {
   const item = await getIngestConfig(c.env.DB);
   return c.json({
@@ -716,6 +754,11 @@ async function fetchAllAccounts(db: D1Database): Promise<AccountRow[]> {
   return results ?? [];
 }
 
+async function fetchAccountById(db: D1Database, id: number): Promise<AccountRow | null> {
+  const row = await db.prepare(`${ACCOUNT_SELECT_SQL} WHERE id = ?`).bind(id).first<AccountRow>();
+  return row ?? null;
+}
+
 async function fetchAccountsByIds(db: D1Database, ids: number[]): Promise<AccountRow[]> {
   if (ids.length === 0) {
     return [];
@@ -791,6 +834,22 @@ async function refreshAccountToken(db: D1Database, account: AccountRow): Promise
 }
 
 async function fetchAccountMails(db: D1Database, account: AccountRow, top: number): Promise<BatchActionDetail> {
+  const result = await fetchAccountMessages(db, account, top, false);
+  return {
+    id: account.id,
+    account: account.account,
+    ok: result.ok,
+    message: result.message,
+    fetchedCount: result.fetchedCount
+  };
+}
+
+async function fetchAccountMessages(
+  db: D1Database,
+  account: AccountRow,
+  top: number,
+  includeBody = true
+): Promise<FetchActionResult> {
   if (!account.clientId || !account.refreshToken) {
     const message = '缺少 client_id 或 refresh_token';
     await updateSyncStatus(db, account.id, {
@@ -801,11 +860,10 @@ async function fetchAccountMails(db: D1Database, account: AccountRow, top: numbe
       fetchedCount: 0
     });
     return {
-      id: account.id,
-      account: account.account,
       ok: false,
       message,
-      fetchedCount: 0
+      fetchedCount: 0,
+      messages: []
     };
   }
 
@@ -820,23 +878,21 @@ async function fetchAccountMails(db: D1Database, account: AccountRow, top: numbe
       fetchedCount: 0
     });
     return {
-      id: account.id,
-      account: account.account,
       ok: false,
       message,
-      fetchedCount: 0
+      fetchedCount: 0,
+      messages: []
     };
   }
 
   const tokenResult = exchanged.result;
-
   const newRefreshToken = tokenResult.refreshToken || account.refreshToken;
   await db
     .prepare('UPDATE accounts SET refresh_token = ? WHERE id = ?')
     .bind(newRefreshToken, account.id)
     .run();
 
-  const fetched = await readGraphMessages(tokenResult.accessToken, top);
+  const fetched = await readGraphMessages(tokenResult.accessToken, top, includeBody);
   if (!fetched.ok) {
     const message = fetched.error || 'Graph 取件失败';
     await updateSyncStatus(db, account.id, {
@@ -847,11 +903,10 @@ async function fetchAccountMails(db: D1Database, account: AccountRow, top: numbe
       fetchedCount: 0
     });
     return {
-      id: account.id,
-      account: account.account,
       ok: false,
       message,
-      fetchedCount: 0
+      fetchedCount: 0,
+      messages: []
     };
   }
 
@@ -866,11 +921,10 @@ async function fetchAccountMails(db: D1Database, account: AccountRow, top: numbe
   });
 
   return {
-    id: account.id,
-    account: account.account,
     ok: true,
     message,
-    fetchedCount
+    fetchedCount,
+    messages: fetched.messages
   };
 }
 
@@ -930,12 +984,18 @@ async function exchangeMicrosoftToken(
 
 async function readGraphMessages(
   accessToken: string,
-  top: number
-): Promise<{ ok: true; messages: Array<Record<string, unknown>> } | { ok: false; error: string }> {
+  top: number,
+  includeBody = false
+): Promise<{ ok: true; messages: AccountMailItem[] } | { ok: false; error: string }> {
   const url = new URL(GRAPH_MESSAGES_URL);
   url.searchParams.set('$top', String(top));
   url.searchParams.set('$orderby', 'receivedDateTime desc');
-  url.searchParams.set('$select', 'subject,from,receivedDateTime,bodyPreview');
+  url.searchParams.set(
+    '$select',
+    includeBody
+      ? 'id,subject,from,receivedDateTime,bodyPreview,body'
+      : 'id,subject,from,receivedDateTime,bodyPreview'
+  );
 
   let response: Response;
   try {
@@ -969,7 +1029,41 @@ async function readGraphMessages(
 
   return {
     ok: true,
-    messages: value.filter((item) => !!item && typeof item === 'object') as Array<Record<string, unknown>>
+    messages: value
+      .filter((item) => !!item && typeof item === 'object')
+      .map((item) => normalizeGraphMailItem(item as Record<string, unknown>, includeBody))
+  };
+}
+
+function normalizeGraphMailItem(item: Record<string, unknown>, includeBody: boolean): AccountMailItem {
+  const fromNode = item.from;
+  let from = '';
+  if (fromNode && typeof fromNode === 'object') {
+    const mailAddressNode = (fromNode as Record<string, unknown>).emailAddress;
+    if (mailAddressNode && typeof mailAddressNode === 'object') {
+      from = asText((mailAddressNode as Record<string, unknown>).address).trim();
+    }
+  }
+
+  let contentType = '';
+  let content = '';
+  if (includeBody) {
+    const bodyNode = item.body;
+    if (bodyNode && typeof bodyNode === 'object') {
+      const bodyRecord = bodyNode as Record<string, unknown>;
+      contentType = asText(bodyRecord.contentType).trim().toLowerCase();
+      content = asText(bodyRecord.content).trim();
+    }
+  }
+
+  return {
+    id: asText(item.id).trim(),
+    subject: asText(item.subject).trim(),
+    from,
+    receivedAt: asText(item.receivedDateTime).trim(),
+    preview: asText(item.bodyPreview).trim(),
+    contentType,
+    content
   };
 }
 
