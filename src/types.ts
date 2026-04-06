@@ -36,6 +36,8 @@ export interface IngestConfig {
   tokenField: string;
 }
 
+export type MailFetchMode = 'graph' | 'imap';
+
 export interface BatchActionDetail {
   id: number;
   account: string;

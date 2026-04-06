@@ -5,7 +5,8 @@ import type {
   AuthUser,
   BatchActionResult,
   IngestConfig,
-  ImportResult
+  ImportResult,
+  MailFetchMode
 } from './types';
 
 interface ApiError {
@@ -134,10 +135,10 @@ export const api = {
 
   getAccountMessages(
     id: number,
-    top = 3
-  ): Promise<{ accountId: number; account: string; messages: AccountMailItem[] }> {
-    const params = new URLSearchParams({ top: String(top) });
-    return request<{ accountId: number; account: string; messages: AccountMailItem[] }>(
+    mode: MailFetchMode
+  ): Promise<{ accountId: number; account: string; mode: MailFetchMode; messages: AccountMailItem[] }> {
+    const params = new URLSearchParams({ mode });
+    return request<{ accountId: number; account: string; mode: MailFetchMode; messages: AccountMailItem[] }>(
       `/api/accounts/${id}/messages?${params.toString()}`
     );
   }

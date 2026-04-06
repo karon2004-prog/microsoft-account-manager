@@ -122,7 +122,7 @@ npm run deploy
 
 - `POST /api/accounts/refresh`：批量刷新 refresh_token
 - `POST /api/accounts/fetch`：批量取件（Graph API）
-- `GET /api/accounts/:id/messages?top=3`：按账号取件明细（用于前端邮件模态框）
+- `GET /api/accounts/:id/messages?mode=graph|imap`：按账号获取全部邮件（用于前端邮件模态框）
 
 请求体示例：
 
@@ -139,6 +139,7 @@ npm run deploy
 - `accountIds` 不传则默认处理全部账号
 - `concurrency` 并发范围 1-20
 - `top` 取件数量范围 1-20（仅取件接口使用）
+- `mode` 支持 `graph` 和 `imap`
 
 返回示例：
 

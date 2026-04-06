@@ -130,13 +130,11 @@
                 <n-tag type="warning" size="small">已选 {{ checkedRowKeys.length }} 条</n-tag>
               </div>
               <div class="list-toolbar-right">
-                <n-input-number
-                  v-model:value="mailTop"
+                <n-select
+                  v-model:value="mailFetchMode"
                   size="small"
-                  :min="1"
-                  :max="20"
-                  :precision="0"
-                  style="width: 96px"
+                  :options="mailModeOptions"
+                  style="width: 120px"
                 />
                 <n-button size="small" :loading="syncLoading" @click="handleRefreshAccounts(false)">
                   刷新选中
@@ -144,7 +142,6 @@
                 <n-button size="small" :loading="syncLoading" @click="handleRefreshAccounts(true)">
                   刷新全部
                 </n-button>
-                <n-tag size="small" type="default">取件数 {{ normalizedMailTop }}</n-tag>
                 <n-button size="small" :loading="tableLoading" @click="loadAccounts">刷新列表</n-button>
               </div>
             </div>
@@ -273,7 +270,7 @@
     <n-modal
       v-model:show="mailVisible"
       preset="card"
-      :title="`邮箱取件 - ${mailAccount}`"
+      :title="`邮箱取件(${mailCurrentModeLabel}) - ${mailAccount}`"
       style="width: min(1100px, 96vw)"
     >
       <div class="mail-modal-wrapper">
@@ -323,8 +320,8 @@ import {
   NGi,
   NGrid,
   NInput,
-  NInputNumber,
   NModal,
+  NSelect,
   NSpace,
   NSpin,
   NTabPane,
@@ -339,7 +336,8 @@ import type {
   AccountMailItem,
   AccountPayload,
   BatchActionResult,
-  IngestConfig
+  IngestConfig,
+  MailFetchMode
 } from './types';
 
 const { message } = createDiscreteApi(['message']);
@@ -361,12 +359,13 @@ const activeTab = ref<'accounts' | 'ingest'>('accounts');
 const accounts = ref<AccountItem[]>([]);
 const searchKeyword = ref('');
 const checkedRowKeys = ref<number[]>([]);
-const mailTop = ref<number | null>(3);
 const tablePageSize = ref<number>(20);
 
 const mailVisible = ref(false);
 const mailLoading = ref(false);
 const mailAccount = ref('');
+const mailFetchMode = ref<MailFetchMode>('graph');
+const mailCurrentMode = ref<MailFetchMode>('graph');
 const mailItems = ref<AccountMailItem[]>([]);
 const selectedMailId = ref('');
 
@@ -538,8 +537,6 @@ const accountColumns: DataTableColumns<AccountItem> = [
   }
 ];
 
-const normalizedMailTop = computed(() => Math.min(Math.max(Math.trunc(mailTop.value || 3), 1), 20));
-
 const tablePagination = computed(() => ({
   pageSize: tablePageSize.value,
   showSizePicker: true,
@@ -564,6 +561,13 @@ const selectedMailText = computed(() => {
   }
   return content;
 });
+
+const mailModeOptions: Array<{ label: string; value: MailFetchMode }> = [
+  { label: 'Graph', value: 'graph' },
+  { label: 'IMAP', value: 'imap' }
+];
+
+const mailCurrentModeLabel = computed(() => (mailCurrentMode.value === 'imap' ? 'IMAP' : 'Graph'));
 
 const ingestEndpointUrl = computed(() =>
   siteOrigin.value ? `${siteOrigin.value}${ingestEndpointPath.value}` : ingestEndpointPath.value
@@ -611,6 +615,8 @@ function clearSessionState(): void {
   mailVisible.value = false;
   mailLoading.value = false;
   mailAccount.value = '';
+  mailFetchMode.value = 'graph';
+  mailCurrentMode.value = 'graph';
   mailItems.value = [];
   selectedMailId.value = '';
   editVisible.value = false;
@@ -909,15 +915,18 @@ async function handleRefreshAccounts(all: boolean): Promise<void> {
 }
 
 async function handleOpenMailModal(row: AccountItem): Promise<void> {
+  const mode = mailFetchMode.value;
   mailVisible.value = true;
   mailLoading.value = true;
   mailAccount.value = row.account;
+  mailCurrentMode.value = mode;
   mailItems.value = [];
   selectedMailId.value = '';
 
   try {
-    const response = await api.getAccountMessages(row.id, normalizedMailTop.value);
+    const response = await api.getAccountMessages(row.id, mode);
     mailAccount.value = response.account;
+    mailCurrentMode.value = response.mode;
     mailItems.value = response.messages;
     selectedMailId.value = response.messages[0]?.id ?? '';
     await loadAccounts();

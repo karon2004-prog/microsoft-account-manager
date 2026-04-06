@@ -17,6 +17,8 @@ type Variables = {
   authUser: string;
 };
 
+type MailFetchMode = 'graph' | 'imap';
+
 interface AccountRow {
   id: number;
   account: string;
@@ -107,7 +109,9 @@ const INGEST_TOKEN_HEADER = 'x-ingest-token';
 const INGEST_PATH = '/api/upload/ingest';
 const MICROSOFT_TOKEN_URL = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token';
 const GRAPH_MESSAGES_URL = 'https://graph.microsoft.com/v1.0/me/messages';
+const OUTLOOK_MESSAGES_URL = 'https://outlook.office.com/api/v2.0/me/messages';
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
+const IMAP_SCOPE = 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access';
 const DEFAULT_REFRESH_CONCURRENCY = 8;
 const DEFAULT_FETCH_CONCURRENCY = 6;
 const DEFAULT_FETCH_TOP = 3;
@@ -414,10 +418,11 @@ app.post('/api/accounts/refresh', async (c) => {
 });
 
 app.post('/api/accounts/fetch', async (c) => {
-  const body = await readJson<{ accountIds?: unknown; concurrency?: unknown; top?: unknown }>(c);
+  const body = await readJson<{ accountIds?: unknown; concurrency?: unknown; top?: unknown; mode?: unknown }>(c);
   const accountIds = parseAccountIds(body.accountIds);
   const concurrency = clampInteger(body.concurrency, 1, 20, DEFAULT_FETCH_CONCURRENCY);
   const top = clampInteger(body.top, 1, 20, DEFAULT_FETCH_TOP);
+  const mode = parseMailFetchMode(body.mode, 'graph');
   const accounts =
     accountIds.length > 0
       ? await fetchAccountsByIds(c.env.DB, accountIds)
@@ -428,7 +433,7 @@ app.post('/api/accounts/fetch', async (c) => {
   }
 
   const details = await mapWithConcurrency(accounts, concurrency, (account) =>
-    fetchAccountMails(c.env.DB, account, top)
+    fetchAccountMails(c.env.DB, account, top, mode)
   );
   const success = details.filter((item) => item.ok).length;
   return c.json({
@@ -441,14 +446,14 @@ app.post('/api/accounts/fetch', async (c) => {
 
 app.get('/api/accounts/:id/messages', async (c) => {
   const id = parseNumericId(c.req.param('id'));
-  const top = clampInteger(c.req.query('top'), 1, 20, DEFAULT_FETCH_TOP);
+  const mode = parseMailFetchMode(c.req.query('mode'), 'graph');
   const account = await fetchAccountById(c.env.DB, id);
 
   if (!account) {
     throw new HTTPException(404, { message: '账号不存在' });
   }
 
-  const result = await fetchAccountMessages(c.env.DB, account, top);
+  const result = await fetchAccountMessages(c.env.DB, account, null, mode, true);
   if (!result.ok) {
     throw new HTTPException(400, { message: result.message });
   }
@@ -456,6 +461,7 @@ app.get('/api/accounts/:id/messages', async (c) => {
   return c.json({
     accountId: account.id,
     account: account.account,
+    mode,
     messages: result.messages
   });
 });
@@ -749,6 +755,21 @@ function clampInteger(value: unknown, min: number, max: number, fallback: number
   return parsed;
 }
 
+function parseMailFetchMode(value: unknown, fallback: MailFetchMode): MailFetchMode {
+  const mode = asText(value).trim().toLowerCase();
+  if (mode === 'imap' || mode === 'graph') {
+    return mode;
+  }
+  return fallback;
+}
+
+function getScopeByMode(mode: MailFetchMode): string {
+  if (mode === 'imap') {
+    return IMAP_SCOPE;
+  }
+  return GRAPH_SCOPE;
+}
+
 async function fetchAllAccounts(db: D1Database): Promise<AccountRow[]> {
   const { results } = await db.prepare(`${ACCOUNT_SELECT_SQL} ORDER BY id DESC`).all<AccountRow>();
   return results ?? [];
@@ -833,8 +854,13 @@ async function refreshAccountToken(db: D1Database, account: AccountRow): Promise
   };
 }
 
-async function fetchAccountMails(db: D1Database, account: AccountRow, top: number): Promise<BatchActionDetail> {
-  const result = await fetchAccountMessages(db, account, top, false);
+async function fetchAccountMails(
+  db: D1Database,
+  account: AccountRow,
+  top: number,
+  mode: MailFetchMode
+): Promise<BatchActionDetail> {
+  const result = await fetchAccountMessages(db, account, top, mode, false);
   return {
     id: account.id,
     account: account.account,
@@ -847,7 +873,8 @@ async function fetchAccountMails(db: D1Database, account: AccountRow, top: numbe
 async function fetchAccountMessages(
   db: D1Database,
   account: AccountRow,
-  top: number,
+  top: number | null,
+  mode: MailFetchMode,
   includeBody = true
 ): Promise<FetchActionResult> {
   if (!account.clientId || !account.refreshToken) {
@@ -867,9 +894,13 @@ async function fetchAccountMessages(
     };
   }
 
-  const exchanged = await exchangeMicrosoftToken(account.refreshToken, account.clientId, GRAPH_SCOPE);
+  const exchanged = await exchangeMicrosoftToken(
+    account.refreshToken,
+    account.clientId,
+    getScopeByMode(mode)
+  );
   if (!exchanged.ok) {
-    const message = exchanged.error || '取件前刷新令牌失败';
+    const message = exchanged.error || `${mode.toUpperCase()}取件前刷新令牌失败`;
     await updateSyncStatus(db, account.id, {
       status: 'fetch_failed',
       message,
@@ -892,9 +923,12 @@ async function fetchAccountMessages(
     .bind(newRefreshToken, account.id)
     .run();
 
-  const fetched = await readGraphMessages(tokenResult.accessToken, top, includeBody);
+  const fetched =
+    mode === 'imap'
+      ? await readImapMessagesViaOutlookApi(tokenResult.accessToken, top, includeBody)
+      : await readGraphMessages(tokenResult.accessToken, top, includeBody);
   if (!fetched.ok) {
-    const message = fetched.error || 'Graph 取件失败';
+    const message = fetched.error || `${mode.toUpperCase()}取件失败`;
     await updateSyncStatus(db, account.id, {
       status: 'fetch_failed',
       message,
@@ -911,7 +945,7 @@ async function fetchAccountMessages(
   }
 
   const fetchedCount = fetched.messages.length;
-  const message = `取件成功，共 ${fetchedCount} 封`;
+  const message = `取件成功(${mode.toUpperCase()})，共 ${fetchedCount} 封`;
   await updateSyncStatus(db, account.id, {
     status: 'fetch_success',
     message,
@@ -984,54 +1018,142 @@ async function exchangeMicrosoftToken(
 
 async function readGraphMessages(
   accessToken: string,
-  top: number,
+  top: number | null,
   includeBody = false
 ): Promise<{ ok: true; messages: AccountMailItem[] } | { ok: false; error: string }> {
-  const url = new URL(GRAPH_MESSAGES_URL);
-  url.searchParams.set('$top', String(top));
-  url.searchParams.set('$orderby', 'receivedDateTime desc');
-  url.searchParams.set(
-    '$select',
-    includeBody
-      ? 'id,subject,from,receivedDateTime,bodyPreview,body'
-      : 'id,subject,from,receivedDateTime,bodyPreview'
-  );
+  const pageSize = top === null ? 100 : top;
+  const select = includeBody
+    ? 'id,subject,from,receivedDateTime,bodyPreview,body'
+    : 'id,subject,from,receivedDateTime,bodyPreview';
 
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
-    });
-  } catch (error) {
-    return {
-      ok: false,
-      error: `Graph请求异常: ${error instanceof Error ? error.message : 'unknown error'}`
-    };
-  }
+  const firstUrl = new URL(GRAPH_MESSAGES_URL);
+  firstUrl.searchParams.set('$top', String(pageSize));
+  firstUrl.searchParams.set('$orderby', 'receivedDateTime desc');
+  firstUrl.searchParams.set('$select', select);
 
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    return {
-      ok: false,
-      error: extractMicrosoftError(payload, response.status)
-    };
-  }
+  const allMessages: AccountMailItem[] = [];
+  let nextUrl: string | null = firstUrl.toString();
 
-  const value = (payload as Record<string, unknown>).value;
-  if (!Array.isArray(value)) {
-    return {
-      ok: false,
-      error: 'Graph响应格式错误，缺少value数组'
-    };
+  while (nextUrl) {
+    let response: Response;
+    try {
+      response = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Graph请求异常: ${error instanceof Error ? error.message : 'unknown error'}`
+      };
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: extractMicrosoftError(payload, response.status)
+      };
+    }
+
+    const value = (payload as Record<string, unknown>).value;
+    if (!Array.isArray(value)) {
+      return {
+        ok: false,
+        error: 'Graph响应格式错误，缺少value数组'
+      };
+    }
+
+    allMessages.push(
+      ...value
+        .filter((item) => !!item && typeof item === 'object')
+        .map((item) => normalizeGraphMailItem(item as Record<string, unknown>, includeBody))
+    );
+
+    if (top !== null) {
+      nextUrl = null;
+      continue;
+    }
+
+    const nextLink = asText((payload as Record<string, unknown>)['@odata.nextLink']).trim();
+    nextUrl = nextLink || null;
   }
 
   return {
     ok: true,
-    messages: value
-      .filter((item) => !!item && typeof item === 'object')
-      .map((item) => normalizeGraphMailItem(item as Record<string, unknown>, includeBody))
+    messages: allMessages
+  };
+}
+
+async function readImapMessagesViaOutlookApi(
+  accessToken: string,
+  top: number | null,
+  includeBody = false
+): Promise<{ ok: true; messages: AccountMailItem[] } | { ok: false; error: string }> {
+  const pageSize = top === null ? 100 : top;
+  const select = includeBody
+    ? 'Id,Subject,From,DateTimeReceived,BodyPreview,Body'
+    : 'Id,Subject,From,DateTimeReceived,BodyPreview';
+
+  const firstUrl = new URL(OUTLOOK_MESSAGES_URL);
+  firstUrl.searchParams.set('$top', String(pageSize));
+  firstUrl.searchParams.set('$orderby', 'DateTimeReceived desc');
+  firstUrl.searchParams.set('$select', select);
+
+  const allMessages: AccountMailItem[] = [];
+  let nextUrl: string | null = firstUrl.toString();
+
+  while (nextUrl) {
+    let response: Response;
+    try {
+      response = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: `IMAP请求异常: ${error instanceof Error ? error.message : 'unknown error'}`
+      };
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: extractMicrosoftError(payload, response.status)
+      };
+    }
+
+    const value = (payload as Record<string, unknown>).value;
+    if (!Array.isArray(value)) {
+      return {
+        ok: false,
+        error: 'IMAP响应格式错误，缺少value数组'
+      };
+    }
+
+    allMessages.push(
+      ...value
+        .filter((item) => !!item && typeof item === 'object')
+        .map((item) => normalizeOutlookMailItem(item as Record<string, unknown>, includeBody))
+    );
+
+    if (top !== null) {
+      nextUrl = null;
+      continue;
+    }
+
+    const nextLink = asText((payload as Record<string, unknown>)['@odata.nextLink']).trim();
+    const fallbackNextLink = asText((payload as Record<string, unknown>)['odata.nextLink']).trim();
+    nextUrl = nextLink || fallbackNextLink || null;
+  }
+
+  return {
+    ok: true,
+    messages: allMessages
   };
 }
 
@@ -1062,6 +1184,38 @@ function normalizeGraphMailItem(item: Record<string, unknown>, includeBody: bool
     from,
     receivedAt: asText(item.receivedDateTime).trim(),
     preview: asText(item.bodyPreview).trim(),
+    contentType,
+    content
+  };
+}
+
+function normalizeOutlookMailItem(item: Record<string, unknown>, includeBody: boolean): AccountMailItem {
+  const fromNode = item.From;
+  let from = '';
+  if (fromNode && typeof fromNode === 'object') {
+    const emailNode = (fromNode as Record<string, unknown>).EmailAddress;
+    if (emailNode && typeof emailNode === 'object') {
+      from = asText((emailNode as Record<string, unknown>).Address).trim();
+    }
+  }
+
+  let contentType = '';
+  let content = '';
+  if (includeBody) {
+    const bodyNode = item.Body;
+    if (bodyNode && typeof bodyNode === 'object') {
+      const bodyRecord = bodyNode as Record<string, unknown>;
+      contentType = asText(bodyRecord.ContentType).trim().toLowerCase();
+      content = asText(bodyRecord.Content).trim();
+    }
+  }
+
+  return {
+    id: asText(item.Id).trim(),
+    subject: asText(item.Subject).trim(),
+    from,
+    receivedAt: asText(item.DateTimeReceived).trim(),
+    preview: asText(item.BodyPreview).trim(),
     contentType,
     content
   };
