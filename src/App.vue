@@ -265,6 +265,10 @@
                 ：更新指定账号备注（开放 API）。
               </li>
               <li>
+                <code>DELETE /api/open/accounts/:id</code>
+                ：删除指定账号（开放 API，token 鉴权）。
+              </li>
+              <li>
                 <code>POST /api/auth/login</code>
                 ：后台登录，登录后可调用管理端 API。
               </li>
@@ -282,6 +286,8 @@
               <n-code :code="openApiCurlByAccount" language="bash" word-wrap />
               <p class="hint">更新账号备注：</p>
               <n-code :code="openApiCurlUpdateRemark" language="bash" word-wrap />
+              <p class="hint">删除账号：</p>
+              <n-code :code="openApiCurlDeleteAccount" language="bash" word-wrap />
             </n-space>
           </n-card>
 
@@ -662,6 +668,11 @@ const openApiCurlUpdateRemark = computed(() => {
   -H "Content-Type: application/json" \\
   -H "${mailApiTokenHeader}: <MAIL_API_TOKEN>" \\
   -d '{"remark":"需要重点跟进"}'`;
+});
+
+const openApiCurlDeleteAccount = computed(() => {
+  return `curl -X DELETE "${apiBaseUrl.value}/api/open/accounts/1" \\
+  -H "${mailApiTokenHeader}: <MAIL_API_TOKEN>"`;
 });
 
 const adminApiDoc = `POST /api/auth/login                     后台管理员登录
