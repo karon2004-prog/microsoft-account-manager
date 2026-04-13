@@ -355,11 +355,12 @@
     <n-modal
       v-model:show="aliasGenerateVisible"
       preset="card"
-      title="生成别名邮箱"
+      :title="aliasGenerateMode === 'custom' ? '添加自定义别名' : '生成别名邮箱'"
       style="max-width: 520px"
     >
       <n-space vertical size="small">
         <p class="hint">{{ aliasGenerateHint }}</p>
+        <p v-if="aliasGenerateMode === 'custom'" class="hint">自定义模式下也可勾选“补满 5 个”。</p>
         <n-checkbox v-model:checked="aliasFillToLimit">是否补满 5 个别名邮箱</n-checkbox>
         <n-input
           v-model:value="aliasCustomSuffix"
@@ -508,6 +509,7 @@ const aliasGenerateLoading = ref(false);
 const aliasFillToLimit = ref(true);
 const aliasCustomSuffix = ref('');
 const aliasGenerateTargetAccountId = ref<number | null>(null);
+const aliasGenerateMode = ref<'random' | 'custom'>('random');
 
 const tableLoading = ref(false);
 const createLoading = ref(false);
@@ -634,7 +636,7 @@ const accountColumns: DataTableColumns<AccountItem> = [
   {
     title: '状态',
     key: 'syncStatus',
-    minWidth: 170,
+    minWidth: 130,
     render: (row) =>
       h(
         NTag,
@@ -652,7 +654,8 @@ const accountColumns: DataTableColumns<AccountItem> = [
   {
     title: '操作',
     key: 'actions',
-    width: 210,
+    width: 220,
+    fixed: 'right',
     render: (row) =>
       h('div', { class: 'action-cell' }, [
         h(
@@ -671,7 +674,7 @@ const accountColumns: DataTableColumns<AccountItem> = [
             trigger: 'click',
             placement: 'bottom-end',
             show: aliasPopoverVisibleByAccountId[row.id] ?? false,
-            width: 420,
+            width: 620,
             'onUpdate:show': (show: boolean) => {
               void handleAliasPopoverVisibleChange(row, show);
             }
@@ -741,18 +744,21 @@ const mailCurrentModeLabel = computed(() => (mailCurrentMode.value === 'imap' ? 
 
 const aliasGenerateHint = computed(() => {
   if (!aliasGenerateTargetAccountId.value) {
-    return '可生成随机 5 位后缀别名，也可添加自定义别名。';
+    return aliasGenerateMode.value === 'custom'
+      ? '输入你要的别名后缀，系统会拼成 主邮箱+后缀@域名。'
+      : '可生成随机 5 位后缀别名，也可添加自定义别名。';
   }
 
   const aliases = aliasByAccountId[aliasGenerateTargetAccountId.value] ?? [];
   const remain = Math.max(aliasLimit - aliases.length, 0);
+  const customPrefix = aliasGenerateMode.value === 'custom' ? '当前为自定义模式。' : '';
   if (aliases.length === 0) {
-    return '当前没有别名，建议本次直接补满 5 个。';
+    return `${customPrefix}当前没有别名，建议本次直接补满 5 个。`.trim();
   }
   if (remain === 0) {
-    return '当前已满 5 个别名。';
+    return `${customPrefix}当前已满 5 个别名。`.trim();
   }
-  return `当前已有 ${aliases.length} 个别名，本次最多可新增 ${remain} 个。`;
+  return `${customPrefix}当前已有 ${aliases.length} 个别名，本次最多可新增 ${remain} 个。`.trim();
 });
 
 const apiBaseUrl = computed(() => siteOrigin.value || 'https://your-domain');
@@ -894,6 +900,7 @@ function clearSessionState(): void {
   aliasFillToLimit.value = true;
   aliasCustomSuffix.value = '';
   aliasGenerateTargetAccountId.value = null;
+  aliasGenerateMode.value = 'random';
 }
 
 function handleApiError(error: unknown, showAuthWarning = true): void {
@@ -1014,9 +1021,10 @@ async function handleAliasPopoverVisibleChange(row: AccountItem, show: boolean):
   }
 }
 
-async function openAliasGenerateModal(row: AccountItem): Promise<void> {
+async function openAliasGenerateModal(row: AccountItem, mode: 'random' | 'custom' = 'random'): Promise<void> {
   await loadAliasesForAccount(row, false);
   aliasGenerateTargetAccountId.value = row.id;
+  aliasGenerateMode.value = mode;
   aliasGenerateVisible.value = true;
   aliasGenerateLoading.value = false;
   aliasFillToLimit.value = true;
@@ -1028,6 +1036,7 @@ function closeAliasGenerateModal(): void {
   aliasGenerateLoading.value = false;
   aliasCustomSuffix.value = '';
   aliasGenerateTargetAccountId.value = null;
+  aliasGenerateMode.value = 'random';
 }
 
 function renderAliasPopoverContent(row: AccountItem) {
@@ -1048,7 +1057,7 @@ function renderAliasPopoverContent(row: AccountItem) {
               secondary: true,
               onClick: (event: MouseEvent) => {
                 event.stopPropagation();
-                void openAliasGenerateModal(row);
+                void openAliasGenerateModal(row, 'random');
               }
             },
             { default: () => '生成别名邮箱' }
@@ -1065,7 +1074,7 @@ function renderAliasPopoverContent(row: AccountItem) {
             class: 'alias-custom-trigger',
             onClick: (event: MouseEvent) => {
               event.stopPropagation();
-              void openAliasGenerateModal(row);
+              void openAliasGenerateModal(row, 'custom');
             }
           },
           { default: () => '添加自定义' }
@@ -1117,7 +1126,7 @@ function renderAliasPopoverContent(row: AccountItem) {
                       void handleToggleAliasStatus(row, alias);
                     }
                   },
-                  { default: () => (alias.isRegistered ? '设为未注册' : '设为已注册') }
+                  { default: () => (alias.isRegistered ? '标记未用' : '标记已用') }
                 ),
                 h(
                   NButton,

@@ -144,12 +144,15 @@ body {
 
 .action-cell {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .alias-popover {
-  width: min(420px, 82vw);
+  width: min(620px, 94vw);
+  max-width: 94vw;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -183,14 +186,15 @@ body {
   flex-direction: column;
   gap: 6px;
   max-height: 270px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .alias-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
   padding-bottom: 6px;
   border-bottom: 1px dashed rgba(22, 52, 71, 0.14);
 }
@@ -201,9 +205,17 @@ body {
 }
 
 .alias-address {
-  flex: 1;
-  min-width: 180px;
+  width: 100%;
+  min-width: 0;
   justify-content: flex-start;
+  overflow: hidden;
+}
+
+.alias-address .n-button__content {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mail-modal-wrapper {
