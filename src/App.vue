@@ -604,7 +604,7 @@ const accountColumns: DataTableColumns<AccountItem> = [
   {
     title: '账号',
     key: 'account',
-    minWidth: 150,
+    minWidth: 100,
     ellipsis: { tooltip: true },
     render: (row) =>
       h(
@@ -622,18 +622,18 @@ const accountColumns: DataTableColumns<AccountItem> = [
         }
       )
   },
-  { title: '密码', key: 'password', minWidth: 150, ellipsis: { tooltip: true } },
+  { title: '密码', key: 'password', minWidth: 100, ellipsis: { tooltip: true } },
   {
     title: 'Client ID',
     key: 'clientId',
-    minWidth: 100,
+    minWidth: 80,
     ellipsis: { tooltip: true },
     render: (row) => row.clientId ?? '-'
   },
   {
     title: 'Refresh Token',
     key: 'refreshToken',
-    minWidth: 100,
+    minWidth: 80,
     ellipsis: { tooltip: true },
     render: (row) => row.refreshToken ?? '-'
   },
